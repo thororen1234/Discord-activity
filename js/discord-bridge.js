@@ -5,9 +5,11 @@ class DiscordBridge {
   constructor() {
     this.isInDiscord = false;
     this.discordSdk = null;
+    const guestName = 'GUEST_' + Math.floor(100 + Math.random() * 900);
     this.user = {
       id: 'runner_' + Math.floor(1000 + Math.random() * 9000),
-      username: 'GUEST_' + Math.floor(100 + Math.random() * 900),
+      username: guestName,
+      name: guestName,
       avatar: null,
       discriminator: '0000',
       isDiscordUser: false
@@ -18,29 +20,26 @@ class DiscordBridge {
   }
 
   async init() {
-    // Check if running inside Discord Activity iframe
+    // Discord always launches Activities with a frame_id query param
     const urlParams = new URLSearchParams(window.location.search);
     const frameId = urlParams.get('frame_id');
-    const isDiscordParam = window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0;
 
-    if (window.DiscordSDK || frameId || isDiscordParam) {
+    if (frameId && window.DiscordSDK) {
       try {
-        if (window.DiscordSDK) {
-          // Initialize Discord SDK
-          this.discordSdk = new window.DiscordSDK.DiscordSDK(urlParams.get('client_id') || '123456789012345678');
-          await this.discordSdk.ready();
-          this.isInDiscord = true;
+        const config = await fetch('/api/config').then(r => r.json());
+        if (!config.clientId) {
+          throw new Error('DISCORD_CLIENT_ID is not configured on the server');
+        }
 
-          // Attempt to get context or user details
-          const channel = await this.discordSdk.commands.getChannel();
-          if (channel) {
-            this.channelId = channel.id;
-          }
+        this.discordSdk = new window.DiscordSDK.DiscordSDK(config.clientId);
+        // ready() never resolves outside a real Discord client, so don't let it hang the app
+        await this.withTimeout(this.discordSdk.ready(), 10000, 'Discord SDK handshake timed out');
+        this.isInDiscord = true;
+        this.channelId = this.discordSdk.channelId;
+        this.guildId = this.discordSdk.guildId;
 
-          // Authorize/Authenticate if token available
-          // (Discord embedded activities use SDK handshake)
-          this.user.isDiscordUser = true;
-          this.user.username = 'DiscordPlayer';
+        if (config.oauthEnabled) {
+          await this.authenticate(config.clientId);
         }
       } catch (e) {
         console.warn('Discord SDK initialize skipped or running in development preview:', e);
@@ -55,6 +54,48 @@ class DiscordBridge {
     // Notify listeners
     this.onReadyCallbacks.forEach(cb => cb(this.user));
     return this.user;
+  }
+
+  // OAuth handshake: authorize in the Discord client, swap the code for a token on our server, then authenticate
+  async authenticate(clientId) {
+    const { code } = await this.discordSdk.commands.authorize({
+      client_id: clientId,
+      response_type: 'code',
+      state: '',
+      prompt: 'none',
+      scope: ['identify']
+    });
+
+    const res = await fetch('/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code })
+    });
+    if (!res.ok) {
+      throw new Error(`Token exchange failed (${res.status})`);
+    }
+    const { access_token } = await res.json();
+
+    const auth = await this.discordSdk.commands.authenticate({ access_token });
+    const discordUser = auth.user;
+
+    const displayName = (discordUser.global_name || discordUser.username).toUpperCase().slice(0, 16);
+    this.user = {
+      id: discordUser.id,
+      username: displayName,
+      name: displayName,
+      // Discord's CDN is blocked inside the Activity sandbox, so avatars go through our server
+      avatar: discordUser.avatar ? `/discord-avatar/${discordUser.id}/${discordUser.avatar}.png` : null,
+      discriminator: discordUser.discriminator,
+      isDiscordUser: true
+    };
+  }
+
+  withTimeout(promise, ms, message) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))
+    ]);
   }
 
   onReady(cb) {

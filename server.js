@@ -5,6 +5,8 @@ const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
 const MAX_ROOM_PLAYERS = 6;
+const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || '';
+const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || '';
 
 // MIME types dictionary
 const MIME_TYPES = {
@@ -20,6 +22,99 @@ const MIME_TYPES = {
   '.mp3': 'audio/mpeg'
 };
 
+function sendJson(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(body));
+}
+
+function readJsonBody(req, maxBytes = 4096) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new Error('Body too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString() || '{}'));
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+// Exchanges the OAuth code from sdk.commands.authorize() for an access token
+async function handleTokenExchange(req, res) {
+  if (!DISCORD_CLIENT_ID || !DISCORD_CLIENT_SECRET) {
+    sendJson(res, 503, { error: 'Discord OAuth is not configured' });
+    return;
+  }
+
+  let code;
+  try {
+    ({ code } = await readJsonBody(req));
+  } catch {
+    sendJson(res, 400, { error: 'Invalid request body' });
+    return;
+  }
+  if (typeof code !== 'string' || !code) {
+    sendJson(res, 400, { error: 'Missing code' });
+    return;
+  }
+
+  try {
+    const discordRes = await fetch('https://discord.com/api/oauth2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: DISCORD_CLIENT_ID,
+        client_secret: DISCORD_CLIENT_SECRET,
+        grant_type: 'authorization_code',
+        code
+      })
+    });
+    const data = await discordRes.json();
+    if (!discordRes.ok || !data.access_token) {
+      console.warn('Discord token exchange failed:', discordRes.status, data.error);
+      sendJson(res, 401, { error: 'Token exchange failed' });
+      return;
+    }
+    sendJson(res, 200, { access_token: data.access_token });
+  } catch (err) {
+    console.error('Discord token exchange error:', err);
+    sendJson(res, 502, { error: 'Could not reach Discord' });
+  }
+}
+
+// Discord's CDN is blocked by the Activity sandbox CSP, so avatars are proxied through this server
+async function handleAvatarProxy(res, userId, avatarHash) {
+  try {
+    const cdnRes = await fetch(`https://cdn.discordapp.com/avatars/${userId}/${avatarHash}.png?size=128`);
+    if (!cdnRes.ok) {
+      res.writeHead(cdnRes.status === 404 ? 404 : 502);
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': 'image/png',
+      'Cache-Control': 'public, max-age=86400'
+    });
+    res.end(Buffer.from(await cdnRes.arrayBuffer()));
+  } catch (err) {
+    console.error('Avatar proxy error:', err);
+    res.writeHead(502);
+    res.end();
+  }
+}
+
 // Static file HTTP server
 const server = http.createServer((req, res) => {
   // Add CORS & security headers for Discord iframe sandboxes
@@ -34,6 +129,26 @@ const server = http.createServer((req, res) => {
   }
 
   let reqPath = req.url.split('?')[0];
+
+  if (reqPath === '/api/config' && req.method === 'GET') {
+    sendJson(res, 200, {
+      clientId: DISCORD_CLIENT_ID || null,
+      oauthEnabled: Boolean(DISCORD_CLIENT_ID && DISCORD_CLIENT_SECRET)
+    });
+    return;
+  }
+
+  if (reqPath === '/api/token' && req.method === 'POST') {
+    handleTokenExchange(req, res);
+    return;
+  }
+
+  const avatarMatch = reqPath.match(/^\/discord-avatar\/(\d{15,21})\/((?:a_)?[0-9a-f]{32})\.png$/);
+  if (avatarMatch && req.method === 'GET') {
+    handleAvatarProxy(res, avatarMatch[1], avatarMatch[2]);
+    return;
+  }
+
   if (reqPath === '/' || reqPath === '') {
     reqPath = '/index.html';
   }

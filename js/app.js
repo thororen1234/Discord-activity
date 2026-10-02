@@ -33,6 +33,7 @@ class ShortCircuitApp {
     const savedHandle = localStorage.getItem('SC_USER_HANDLE');
     if (savedHandle && savedHandle.trim().length > 0) {
       this.currentUser.username = savedHandle.trim();
+      this.currentUser.name = this.currentUser.username;
     }
 
     this.updateHeaderProfile();
@@ -106,6 +107,7 @@ class ShortCircuitApp {
       const newHandle = this.vkBuffer.trim();
       if (newHandle.length > 0) {
         this.currentUser.username = newHandle;
+        this.currentUser.name = newHandle;
         localStorage.setItem('SC_USER_HANDLE', newHandle);
         this.updateHeaderProfile();
         this.closeModal('modal-virtual-keyboard');
@@ -546,9 +548,9 @@ class ShortCircuitApp {
         if (i === 0) card.classList.add('active-seat');
         card.innerHTML = `
           <div class="seat-avatar">
-            <img src="${p.avatar || window.discordBridge.generateNeonAvatar(p.name, p.isBot)}" alt="Avatar">
+            <img src="${escapeHtml(p.avatar || window.discordBridge.generateNeonAvatar(p.name || '', p.isBot))}" alt="Avatar">
           </div>
-          <span class="seat-name">${p.name}</span>
+          <span class="seat-name">${escapeHtml(p.name)}</span>
           <span class="status-pill ready">${i === 0 ? 'READY (HOST)' : (p.isBot ? 'BOT' : 'READY')}</span>
         `;
         if (this.lobbyRole === 'host' && i > 0 && !p.isBot) {
@@ -743,10 +745,10 @@ class ShortCircuitApp {
         <div>
           <div class="station-header">
             <div class="station-avatar">
-              <img src="${rival.avatar || window.discordBridge.generateNeonAvatar(rival.name, rival.isBot)}" alt="Avatar">
+              <img src="${escapeHtml(rival.avatar || window.discordBridge.generateNeonAvatar(rival.name, rival.isBot))}" alt="Avatar">
             </div>
             <div>
-              <div class="station-name">${rival.name}</div>
+              <div class="station-name">${escapeHtml(rival.name)}</div>
               <div style="font-size: 10px; color: var(--text-dim);">${rival.isEliminated ? '💀 FLATLINED' : `TERMINAL ${pKey.toUpperCase()}`}</div>
             </div>
           </div>
@@ -1112,6 +1114,12 @@ class ShortCircuitApp {
   delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[ch]);
 }
 
 window.addEventListener('DOMContentLoaded', () => {

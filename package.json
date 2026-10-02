@@ -4,8 +4,9 @@
   "description": "Short Circuit - Turn-Based Bluffing & Risk Management HTML5 Game for Discord Activities",
   "main": "server.js",
   "scripts": {
+    "build": "esbuild src/discord-sdk.js --bundle --minify --format=iife --global-name=DiscordSDK --outfile=js/vendor/discord-sdk.js",
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "npm run build && node server.js"
   },
   "keywords": [
     "discord-activity",
@@ -18,5 +19,9 @@
   "license": "MIT",
   "dependencies": {
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@discord/embedded-app-sdk": "^2.5.0",
+    "esbuild": "^0.28.2"
   }
 }
